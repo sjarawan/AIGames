@@ -203,7 +203,7 @@
   }
 
   function drawCell(gx, gy, color){
-    ctx.fillStyle = colorString(color);
+    ctx.fillStyle = Array.isArray(color) ? colorString(color) : color;
     ctx.fillRect(gx*CELL+1, gy*CELL+1, CELL-2, CELL-2);
   }
 

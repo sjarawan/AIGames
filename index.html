@@ -1,33 +1,53 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pong Game Menu</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            text-align: center;
-            background-color: #282c34;
-            color: white;
-            padding: 50px;
-        }
-        a {
-            color: #61dafb;
-            text-decoration: none;
-            font-size: 24px;
-        }
-        a:hover {
-            text-decoration: underline;
-        }
-    </style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Classic Web Games</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🎮</text></svg>">
+  <style>
+    :root {
+      --bg: #0f1115; --card: #151925; --text: #e6e6e6; --muted:#9aa3af; --accent:#65d6ff;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 16px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    header { padding: 32px 20px 8px; text-align:center; }
+    h1 { margin:0; font-size: clamp(24px, 4vw, 40px); letter-spacing: .3px; }
+    p.sub { margin: 8px 0 24px; color: var(--muted); }
+    main { max-width: 960px; margin: 0 auto; padding: 0 16px 40px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+    .card { background: var(--card); border: 1px solid rgba(255,255,255,.06); border-radius: 16px; padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.25); transition: transform .15s ease, box-shadow .15s ease; }
+    .card:hover { transform: translateY(-2px); box-shadow: 0 14px 40px rgba(0,0,0,.35); }
+    .card h3 { margin: 0 0 6px; font-size: 18px; }
+    .card p { margin: 0 0 12px; color: var(--muted); }
+    .card a { display:inline-block; padding:10px 14px; border-radius:12px; border:1px solid rgba(255,255,255,.12); color:var(--text); text-decoration:none; }
+    .card a:hover { border-color: var(--accent); color: var(--accent); }
+    footer { text-align:center; color: var(--muted); padding: 24px; font-size: 14px; }
+  </style>
 </head>
 <body>
-    <h1>Welcome to the Game Menu</h1>
-    <p>Select a game to play:</p>
-    <ul>
-        <li><a href="pong.html">Play Pong</a></li>
-        <!-- Future games can be added here -->
-    </ul>
+  <header>
+    <h1>Classic Web Games</h1>
+    <p class="sub">Tiny, single-file clones built with Canvas + vanilla JS. Add more as you go.</p>
+  </header>
+  <main>
+    <div class="grid">
+      <div class="card">
+        <h3>🟦 Pong</h3>
+        <p>Two paddles, one ball. First to 11 wins. Keyboard or touch.</p>
+        <a href="pong.html">Play Pong</a>
+      </div>
+      <!-- Duplicate this card as you add games like Snake, Tetris, Pac‑Man -->
+      <!--
+      <div class="card">
+        <h3>🟩 Snake</h3>
+        <p>Eat, grow, avoid walls and yourself. Grid-based fun.</p>
+        <a href="snake.html">Play Snake</a>
+      </div>
+      -->
+    </div>
+  </main>
+  <footer>© <span id="y"></span> Classic Web Games</footer>
+  <script>document.getElementById('y').textContent = new Date().getFullYear();</script>
 </body>
 </html>

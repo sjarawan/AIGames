@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Snake</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html,body{height:100%;margin:0;background:#111;display:grid;place-items:center;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+    canvas{background:#1d1d1d;image-rendering:pixelated;box-shadow:0 0 0 2px #000, 0 8px 30px rgba(0,0,0,.5)}
+    .hud{position:fixed;top:14px;left:14px;color:#eee;font:14px/1.2 monospace}
+    .hud b{color:#00eaff}
+    .help{position:fixed;bottom:14px;left:14px;color:#aaa;font:12px/1.2 monospace;max-width:90vw}
+    .banner{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;color:#eee;font:16px/1.4 monospace;background:rgba(0,0,0,.6);padding:16px 18px;border-radius:8px;display:none}
+    .btn{color:#0ef}
+  </style>
+</head>
+<body>
+  <canvas id="game" width="480" height="360" aria-label="Snake game"></canvas>
+
+  <div class="hud">
+    Score: <b id="score">0</b> &nbsp;|&nbsp; Best: <b id="best">0</b>
+  </div>
+  <div class="help">
+    Arrows/WASD to move · <span class="btn">P</span> pause · <span class="btn">R</span>/<span class="btn">Enter</span> restart
+  </div>
+  <div class="banner" id="banner"></div>
+
+  <script>
+  // ----- CONFIG --------------------------------------------------------------
+  const GRID_W = 24, GRID_H = 18;     // grid size (cells)
+  const CELL   = 20;                   // pixels per cell
+  const TICK_START = 8;                // frames per step (lower = faster)
+  const SPEEDUP_EVERY = 5;             // speed up every N apples
+  const WRAP_WALLS = true;             // true = wrap around edges; false = die on wall
+
+  // Canvas size from grid
+  const canvas = document.getElementById('game');
+  canvas.width = GRID_W * CELL;
+  canvas.height = GRID_H * CELL;
+  const ctx = canvas.getContext('2d');
+
+  // HUD refs
+  const scoreEl = document.getElementById('score');
+  const bestEl  = document.getElementById('best');
+  const banner  = document.getElementById('banner');
+
+  // ----- STATE ---------------------------------------------------------------
+  const DIRS = { ArrowUp:[0,-1], ArrowDown:[0,1], ArrowLeft:[-1,0], ArrowRight:[1,0],
+                 w:[0,-1], s:[0,1], a:[-1,0], d:[1,0] };
+
+  let snake, dir, dirQueue, apple, score, best, tick, frame, running, gameOver, ate;
+  best = +localStorage.getItem('snake_best') || 0; bestEl.textContent = best;
+  reset();
+
+  function reset(){
+    // center snake with length 4
+    const cx = (GRID_W/2|0), cy = (GRID_H/2|0);
+    snake = [{x:cx, y:cy}, {x:cx-1, y:cy}, {x:cx-2, y:cy}, {x:cx-3, y:cy}];
+    dir = [1,0];                // moving right
+    dirQueue = [];
+    apple = spawnApple();
+    score = 0; scoreEl.textContent = score;
+    tick = TICK_START; frame = 0;
+    running = true; gameOver = false; ate = false;
+    hideBanner();
+  }
+
+  // ----- INPUT ---------------------------------------------------------------
+  const keys = new Set();
+  addEventListener('keydown', e=>{
+    const k = e.key;
+    if(k==='p' || k==='P'){ togglePause(); return; }
+    if(k==='r' || k==='R' || k==='Enter'){ if(gameOver) reset(); return; }
+    if (DIRS[k]) {
+      e.preventDefault();
+      queueDirection(DIRS[k]);
+    }
+  });
+
+  function queueDirection(next){
+    // prevent 180° turn
+    const [nx,ny] = next, [dx,dy] = dirQueue[0] || dir;
+    if (nx === -dx && ny === -dy) return;
+    // avoid flooding: only keep one queued change per tick
+    if (dirQueue.length < 2) dirQueue.unshift(next);
+  }
+
+  function togglePause(){
+    if(gameOver) return;
+    running = !running;
+    running ? hideBanner() : showBanner('Paused\nPress P to resume');
+  }
+
+  // ----- GAME LOOP -----------------------------------------------------------
+  let last = 0;
+  requestAnimationFrame(loop);
+
+  function loop(ts){
+    const dt = Math.min(33, ts - last); // cap frame gap
+    last = ts;
+    if (running && !gameOver){
+      frame += 1;
+      if (frame % tick === 0) step();
+    }
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  function step(){
+    // commit one queued direction per step
+    if (dirQueue.length) dir = dirQueue.pop();
+
+    const head = { x: snake[0].x + dir[0], y: snake[0].y + dir[1] };
+
+    // walls: wrap or die
+    if (WRAP_WALLS){
+      head.x = (head.x + GRID_W) % GRID_W;
+      head.y = (head.y + GRID_H) % GRID_H;
+    } else {
+      if (head.x<0 || head.x>=GRID_W || head.y<0 || head.y>=GRID_H){
+        return doGameOver();
+      }
+    }
+
+    // self-collision (check against body, excluding last tail if we grow after move)
+    if (hitsSnake(head)) return doGameOver();
+
+    // move
+    snake.unshift(head);
+
+    // apple
+    if (head.x === apple.x && head.y === apple.y){
+      ate = true;
+      score += 1;
+      scoreEl.textContent = score;
+      apple = spawnApple();
+      // speed up every few apples
+      if (score % SPEEDUP_EVERY === 0 && tick > 3) tick -= 1;
+    } else {
+      ate = false;
+      snake.pop();
+    }
+  }
+
+  function hitsSnake(pos){
+    // if we ate, we won't remove tail this step; else last cell is safe to overlap check
+    const len = snake.length - (ate ? 0 : 1);
+    for (let i=0;i<len;i++){
+      if (snake[i].x === pos.x && snake[i].y === pos.y) return true;
+    }
+    return false;
+  }
+
+  function spawnApple(){
+    // pick a free cell not occupied by snake
+    let x,y,ok=false, tries=0;
+    do{
+      x = (Math.random()*GRID_W)|0;
+      y = (Math.random()*GRID_H)|0;
+      ok = !snake.some(c=>c.x===x&&c.y===y);
+      tries++;
+      if (tries>500) break; // extremely unlikely safeguard
+    }while(!ok);
+    return {x,y};
+  }
+
+  function doGameOver(){
+    gameOver = true; running = false;
+    if (score > best){ best = score; localStorage.setItem('snake_best', String(best)); }
+    bestEl.textContent = best;
+    showBanner(`Game Over\nScore ${score}  •  Best ${best}\nPress Enter or R to restart`);
+  }
+
+  // ----- RENDER --------------------------------------------------------------
+  function draw(){
+    // clear
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    // background grid
+    ctx.fillStyle = '#242424';
+    for (let y=0;y<GRID_H;y++){
+      for (let x=0;x<GRID_W;x++){
+        if ((x+y)&1) ctx.fillRect(x*CELL, y*CELL, CELL, CELL);
+      }
+    }
+
+    // apple (simple target)
+    drawCell(apple.x, apple.y, '#ff4757');
+    // snake
+    for (let i=snake.length-1;i>=0;i--){
+      const c = snake[i];
+      // gradient-ish body
+      const t = i / Math.max(1,snake.length-1);
+      const col = lerpColor([0,234,255],[0,180,120], t);
+      drawCell(c.x, c.y, col);
+    }
+
+    // head accents (eyes)
+    const h = snake[0];
+    drawEye(h.x, h.y, dir);
+
+    // paused overlay is handled by banner
+  }
+
+  function drawCell(gx, gy, color){
+    ctx.fillStyle = colorString(color);
+    ctx.fillRect(gx*CELL+1, gy*CELL+1, CELL-2, CELL-2);
+  }
+
+  function drawEye(gx, gy, dir){
+    const x = gx*CELL, y = gy*CELL;
+    ctx.fillStyle = '#fff';
+    const ex = dir[0]===1 ? 12 : dir[0]===-1 ? 4 : 8;
+    const ey = dir[1]===1 ? 12 : dir[1]===-1 ? 4 : 8;
+    ctx.fillRect(x+ex, y+ey, 3, 3);
+  }
+
+  // small color helpers
+  function lerpColor(a,b,t){
+    return [
+      (a[0]+(b[0]-a[0])*t)|0,
+      (a[1]+(b[1]-a[1])*t)|0,
+      (a[2]+(b[2]-a[2])*t)|0
+    ];
+  }
+  function colorString([r,g,b]){ return `rgb(${r},${g},${b})`; }
+
+  // ----- BANNER --------------------------------------------------------------
+  function showBanner(msg){
+    banner.textContent = msg;
+    banner.style.display = 'block';
+  }
+  function hideBanner(){
+    banner.style.display = 'none';
+  }
+  </script>
+</body>
+</html>

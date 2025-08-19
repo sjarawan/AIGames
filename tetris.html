@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Tetris</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root{--bg:#0f1115;--card:#151925;--muted:#9aa3af;--text:#e6e6e6}
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+    .wrap{min-height:100%;display:flex;flex-direction:column;align-items:center;gap:10px;padding:10px}
+    canvas{background:var(--card);border:1px solid rgba(255,255,255,.08);border-radius:12px;image-rendering:pixelated;touch-action:none}
+    .hud{font:14px/1.2 monospace;align-self:flex-start}
+    .hud b{color:#65d6ff}
+    .hint{color:var(--muted);font:12px/1.2 monospace;text-align:center}
+    .banner{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;color:#e6e6e6;font:16px/1.4 monospace;background:rgba(0,0,0,.55);padding:16px 18px;border-radius:10px;display:none;white-space:pre-line}
+    /* Controls bar */
+    .controls{display:grid;grid-template-columns:repeat(5,minmax(54px,1fr));gap:8px;max-width:520px;width:100%}
+    .controls button{
+      -webkit-tap-highlight-color:transparent;
+      touch-action:manipulation;
+      padding:12px 10px;border-radius:12px;border:1px solid rgba(255,255,255,.12);
+      background:#111726;color:#e6e6e6;font-size:16px;font-weight:600
+    }
+    .controls button:active{transform:translateY(1px)}
+    .controls .wide{grid-column:span 2}
+    @media (min-width:560px){
+      .controls{grid-template-columns:repeat(6,1fr)}
+      .controls .wide{grid-column:span 3}
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hud">
+      Score: <b id="score">0</b> |
+      Lines: <b id="lines">0</b> |
+      Level: <b id="level">1</b> |
+      Best: <b id="best">0</b>
+    </div>
+
+    <canvas id="game" width="520" height="520" aria-label="Tetris game canvas" role="img"></canvas>
+
+    <div class="hint">
+      Desktop: ←/→ move • ↑/X rotate • Z ccw • ↓ soft drop • Space hard drop • P pause • R reset • Esc back
+      <br/>Mobile: <b>Tap</b> rotate • <b>Swipe L/R</b> move • <b>Swipe ↓</b> soft/long hard drop • Or use buttons:
+    </div>
+
+    <!-- On-screen controls -->
+    <div class="controls" aria-label="On-screen controls">
+      <button id="btnLeft"      aria-label="Move Left">◀️</button>
+      <button id="btnRotCCW"    aria-label="Rotate CCW">🔄</button>
+      <button id="btnRotCW"     aria-label="Rotate CW">🔁</button>
+      <button id="btnRight"     aria-label="Move Right">▶️</button>
+      <button id="btnSoft"      aria-label="Soft Drop">⬇️</button>
+
+      <button id="btnHard" class="wide" aria-label="Hard Drop">⤓ Hard Drop</button>
+      <button id="btnPause"     aria-label="Pause/Resume">⏸ Pause</button>
+      <button id="btnReset"     aria-label="Reset Game">⟳ Reset</button>
+    </div>
+  </div>
+
+  <div class="banner" id="banner"></div>
+
+  <script>
+  // =================== CONFIG ===================
+  const COLS = 10, ROWS = 20;     // playfield size (visible)
+  const CELL = 24;                 // block size (pixels)
+  const HIDDEN = 2;                // hidden rows above (spawn buffer)
+  const SIDE = 200;                // sidebar width (for next + stats)
+  const CANVAS_W = COLS*CELL + SIDE, CANVAS_H = ROWS*CELL;
+  const SCORE_LINE = [100, 300, 500, 800]; // 1..4 lines
+  const DROP_START = 1000;         // ms per auto drop at level 1
+  const DROP_MIN   = 80;           // fastest speed
+  const DROP_STEP  = 80;           // speedup per level
+  const LINES_PER_LEVEL = 10;
+
+  // Canvas
+  const canvas = document.getElementById('game');
+  canvas.width = CANVAS_W; canvas.height = CANVAS_H;
+  const ctx = canvas.getContext('2d');
+
+  const scoreEl = document.getElementById('score');
+  const linesEl = document.getElementById('lines');
+  const levelEl = document.getElementById('level');
+  const banner  = document.getElementById('banner');
+  const bestEl  = document.getElementById('best');
+  let best = +localStorage.getItem('tetris_best') || 0; bestEl.textContent = best;
+
+  // Colors per tetromino (I, J, L, O, S, T, Z)
+  const COLORS = {
+    I: '#29b6f6', J: '#5c6bc0', L: '#ffb74d', O: '#ffd54f',
+    S: '#66bb6a', T: '#ba68c8', Z: '#ef5350'
+  };
+
+  // Tetromino shapes in 4x4 matrices (1 = filled)
+  const SHAPES = {
+    I: [[0,0,0,0, 1,1,1,1, 0,0,0,0, 0,0,0,0]],
+    J: [[1,0,0,0, 1,1,1,0, 0,0,0,0, 0,0,0,0]],
+    L: [[0,0,1,0, 1,1,1,0, 0,0,0,0, 0,0,0,0]],
+    O: [[0,1,1,0, 0,1,1,0, 0,0,0,0, 0,0,0,0]],
+    S: [[0,1,1,0, 1,1,0,0, 0,0,0,0, 0,0,0,0]],
+    T: [[0,1,0,0, 1,1,1,0, 0,0,0,0, 0,0,0,0]],
+    Z: [[1,1,0,0, 0,1,1,0, 0,0,0,0, 0,0,0,0]],
+  };
+
+  // =================== STATE ===================
+  const W = COLS, H = ROWS + HIDDEN;     // internal grid includes hidden rows
+  let grid = makeGrid(W, H);             // 0 = empty, or 'I','J',... piece codes
+  let current = null;                    // active falling piece
+  let nextType = null;                   // next piece type
+  let bag = [];                          // 7-bag randomizer
+
+  let score = 0, lines = 0, level = 1;
+  let dropTimer = 0, dropInterval = DROP_START;
+  let running = true, gameOver = false;
+
+  // Keys (for soft drop acceleration)
+  const keys = new Set();
+
+  // =================== INIT ===================
+  spawnNewPiece();
+  requestAnimationFrame(loop);
+
+  // =================== INPUT: Keyboard ===================
+  addEventListener('keydown', e=>{
+    const k = e.key;
+    if (k === 'Escape') { location.href = 'index.html'; return; }
+    if (k === 'p' || k === 'P') { togglePause(); return; }
+    if (k === 'r' || k === 'R') { reset(); return; }
+    if (gameOver || !running) return;
+
+    if (e.repeat) { 
+      // allow holding ArrowDown to accelerate (soft drop)
+      if (k === 'ArrowDown') keys.add('ArrowDown');
+      return; 
+    }
+
+    if (k === 'ArrowLeft') move(-1);
+    else if (k === 'ArrowRight') move(1);
+    else if (k === 'ArrowDown') { softDrop(); keys.add('ArrowDown'); }
+    else if (k === ' '){ hardDrop(); }
+    else if (k === 'ArrowUp' || k === 'x' || k === 'X'){ rotate(+1); }
+    else if (k === 'z' || k === 'Z'){ rotate(-1); }
+  });
+
+  addEventListener('keyup', e=>{
+    if (e.key === 'ArrowDown') keys.delete('ArrowDown');
+  });
+
+  // =================== INPUT: Touch (swipe + tap) ===================
+  // Tap = rotate cw; swipe L/R = move; short swipe down = soft drop; long swipe down = hard drop.
+  let touchStartX = 0, touchStartY = 0;
+
+  canvas.addEventListener('touchstart', e => {
+    const t = e.changedTouches[0];
+    touchStartX = t.clientX;
+    touchStartY = t.clientY;
+  }, { passive: true });
+
+  canvas.addEventListener('touchend', e => {
+    if (gameOver || !running) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - touchStartX;
+    const dy = t.clientY - touchStartY;
+    const adx = Math.abs(dx), ady = Math.abs(dy);
+
+    const THRESH = 24;         // minimal movement to consider a swipe
+    const HARD_DROP = 120;     // long downward swipe -> hard drop
+
+    if (adx < 10 && ady < 10) { rotate(+1); return; } // tap
+    if (adx > ady) {
+      if (dx > THRESH) move(1);
+      else if (dx < -THRESH) move(-1);
+    } else {
+      if (dy > HARD_DROP) hardDrop();
+      else if (dy > THRESH) softDrop();
+    }
+  }, { passive: true });
+
+  // =================== INPUT: On-screen Buttons ===================
+  // Simple press & hold repeat for move/drop buttons
+  function bindHold(btn, onTap, onRepeat, interval=120){
+    let timer = null;
+    const start = (e)=>{
+      e.preventDefault();
+      onTap();
+      if (onRepeat){
+        clearInterval(timer);
+        timer = setInterval(onRepeat, interval);
+      }
+    };
+    const stop = ()=>{
+      if (timer){ clearInterval(timer); timer=null; }
+    };
+    btn.addEventListener('click', e=>{ e.preventDefault(); onTap(); });
+    btn.addEventListener('pointerdown', start);
+    btn.addEventListener('pointerup', stop);
+    btn.addEventListener('pointerleave', stop);
+    btn.addEventListener('pointercancel', stop);
+  }
+
+  // Button refs
+  const btnLeft  = document.getElementById('btnLeft');
+  const btnRight = document.getElementById('btnRight');
+  const btnRotCCW= document.getElementById('btnRotCCW');
+  const btnRotCW = document.getElementById('btnRotCW');
+  const btnSoft  = document.getElementById('btnSoft');
+  const btnHard  = document.getElementById('btnHard');
+  const btnPause = document.getElementById('btnPause');
+  const btnReset = document.getElementById('btnReset');
+
+  // Bind actions
+  bindHold(btnLeft,  ()=> move(-1), ()=> move(-1));
+  bindHold(btnRight, ()=> move(1),   ()=> move(1));
+  btnRotCCW.addEventListener('click', ()=> rotate(-1));
+  btnRotCW .addEventListener('click', ()=> rotate(+1));
+  bindHold(btnSoft,  ()=> softDrop(), ()=> softDrop(), 70);
+  btnHard.addEventListener('click',   ()=> hardDrop());
+  btnPause.addEventListener('click',  ()=> togglePause());
+  btnReset.addEventListener('click',  ()=> reset());
+
+  // =================== MAIN LOOP ===================
+  let last = 0;
+  function loop(ts){
+    const dt = ts - last; last = ts;
+    if (running && !gameOver){
+      dropTimer += dt;
+      // accelerate gravity while soft dropping via key
+      const targetInterval = keys.has('ArrowDown') ? 40 : dropInterval;
+      if (dropTimer >= targetInterval){
+        dropTimer = 0;
+        stepDown(keys.has('ArrowDown')); // if soft, award points
+      }
+    }
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  // =================== GAME ACTIONS ===================
+  function move(dir){
+    if (gameOver || !running) return;
+    current.x += dir;
+    if (collides(current)) current.x -= dir;
+  }
+
+  function softDrop(){
+    if (gameOver || !running) return;
+    // move one row; gain +1 score
+    if (!stepDown(true)) return;
+  }
+
+  function hardDrop(){
+    if (gameOver || !running) return;
+    // drop until collision; +2 per cell
+    let dropped = 0;
+    while(!wouldCollideAt(current, current.x, current.y+1)){
+      current.y += 1; dropped++;
+    }
+    score += dropped * 2;
+    lockPiece();
+  }
+
+  function stepDown(isSoft=false){
+    if (!wouldCollideAt(current, current.x, current.y+1)){
+      current.y += 1;
+      if (isSoft) score += 1;
+      return true;
+    } else {
+      lockPiece();
+      return false;
+    }
+  }
+
+  function rotate(dir){
+    if (gameOver || !running) return;
+    // dir=+1 cw, -1 ccw
+    const original = current.shape.slice();
+    const rotated = rotateShape(original, dir);
+    const kicks = [[0,0],[-1,0],[1,0],[0,-1],[-2,0],[2,0]]; // simple wall-kicks
+    for (const [kx, ky] of kicks){
+      const x = current.x + kx, y = current.y + ky;
+      if (!wouldCollideMatrix(rotated, x, y)){
+        current.shape = rotated;
+        current.x = x; current.y = y;
+        return;
+      }
+    }
+    // rotation failed -> keep original
+  }
+
+  function lockPiece(){
+    // merge into grid
+    forEachCell(current.shape, (cx, cy) => {
+      const gx = current.x + cx, gy = current.y + cy;
+      if (gy >= 0) grid[gy][gx] = current.type; // write type letter
+      // if gy < 0, we locked above visible area -> game over
+    });
+
+    // line clears
+    const cleared = clearLines();
+    if (cleared > 0){
+      score += SCORE_LINE[cleared-1] || 0;
+      lines += cleared;
+      const newLevel = 1 + Math.floor(lines / LINES_PER_LEVEL);
+      if (newLevel !== level){
+        level = newLevel;
+        dropInterval = Math.max(DROP_MIN, DROP_START - (level-1)*DROP_STEP);
+      }
+    }
+
+    spawnNewPiece();
+    // If immediately colliding after spawn -> game over
+    if (collides(current)){
+      gameOver = true; running = false;
+      if (score > best){ best = score; localStorage.setItem('tetris_best', String(best)); }
+      bestEl.textContent = best;
+      showBanner(`Game Over\nScore ${score} • Lines ${lines}\nPress R or Reset to try again`);
+    }
+  }
+
+  function spawnNewPiece(){
+    if (!nextType) nextType = takeFromBag();
+    const type = nextType;
+    nextType = takeFromBag();
+
+    const base = SHAPES[type][0].slice(); // 4x4 flat
+    current = { type, shape: base, x: 3, y: -HIDDEN, color: COLORS[type] };
+    dropTimer = 0;
+  }
+
+  function reset(){
+    grid = makeGrid(W, H);
+    score = 0; lines = 0; level = 1;
+    dropInterval = DROP_START; dropTimer = 0;
+    gameOver = false; running = true;
+    bag = []; nextType = null; current = null;
+    spawnNewPiece();
+    hideBanner();
+    updateHUD();
+  }
+
+  // =================== GRID & SHAPES ===================
+  function makeGrid(w,h){
+    const g = new Array(h);
+    for (let y=0;y<h;y++){ g[y] = new Array(w).fill(0); }
+    return g;
+  }
+
+  function rotateShape(shape, dir){
+    // shape is 16-length array (4x4). Rotate CW or CCW.
+    const m = shapeToMatrix(shape);
+    const n = 4;
+    const out = new Array(n*n).fill(0);
+    for (let y=0;y<n;y++){
+      for (let x=0;x<n;x++){
+        const v = m[y][x];
+        let nx, ny;
+        if (dir > 0){ nx = n-1-y; ny = x; }  // CW
+        else {          nx = y; ny = n-1-x; } // CCW
+        out[ny*n + nx] = v;
+      }
+    }
+    return out;
+  }
+
+  function shapeToMatrix(shape){
+    const m = [[],[],[],[]];
+    for (let i=0;i<16;i++){ m[(i/4|0)].push(shape[i]); }
+    return m;
+  }
+
+  function forEachCell(shape, cb){
+    for (let i=0;i<16;i++){
+      if (!shape[i]) continue;
+      const x = i % 4, y = (i/4)|0;
+      cb(x,y);
+    }
+  }
+
+  function wouldCollideMatrix(shape, x, y){
+    // check boundaries vs grid
+    let hit = false;
+    forEachCell(shape, (cx,cy)=>{
+      const gx = x + cx, gy = y + cy;
+      if (gx < 0 || gx >= W || gy >= H){ hit = true; return; }
+      if (gy >= 0 && grid[gy][gx]){ hit = true; return; }
+    });
+    return hit;
+  }
+
+  function collides(piece){
+    return wouldCollideMatrix(piece.shape, piece.x, piece.y);
+  }
+
+  function wouldCollideAt(piece, x, y){
+    return wouldCollideMatrix(piece.shape, x, y);
+  }
+
+  function clearLines(){
+    let cleared = 0;
+    for (let y=H-1; y>=0; y--){
+      if (y < 0) break;
+      if (y < HIDDEN) continue; // ignore hidden rows
+      let full = true;
+      for (let x=0;x<W;x++){
+        if (!grid[y][x]){ full = false; break; }
+      }
+      if (full){
+        cleared++;
+        for (let yy=y; yy>0; yy--){ grid[yy] = grid[yy-1].slice(); }
+        grid[0] = new Array(W).fill(0);
+        y++; // recheck row after shifting
+      }
+    }
+    return cleared;
+  }
+
+  // 7-bag generator
+  function takeFromBag(){
+    if (bag.length === 0){
+      bag = ['I','J','L','O','S','T','Z'];
+      for (let i=bag.length-1;i>0;i--){
+        const j = Math.floor(Math.random()*(i+1));
+        [bag[i], bag[j]] = [bag[j], bag[i]];
+      }
+    }
+    return bag.pop();
+  }
+
+  // =================== DRAW ===================
+  function draw(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    // Court background
+    ctx.fillStyle = '#0d1018';
+    ctx.fillRect(0,0,COLS*CELL, CANVAS_H);
+
+    // Sidebar
+    ctx.fillStyle = '#111726';
+    ctx.fillRect(COLS*CELL, 0, SIDE, CANVAS_H);
+
+    // Light grid dots
+    ctx.fillStyle = '#1f2638';
+    for (let y=0; y<ROWS; y++){
+      for (let x=0; x<COLS; x++){
+        ctx.fillRect(x*CELL, y*CELL, 1, 1);
+      }
+    }
+
+    // Draw placed blocks (skip hidden rows)
+    for (let y=HIDDEN; y<H; y++){
+      for (let x=0;x<W;x++){
+        const cell = grid[y][x];
+        if (cell) drawBlock(x, y-HIDDEN, COLORS[cell]);
+      }
+    }
+
+    // Draw current piece (only visible part)
+    forEachCell(current.shape, (cx, cy)=>{
+      const gx = current.x + cx;
+      const gy = current.y + cy;
+      if (gy >= 0) drawBlock(gx, gy, current.color);
+    });
+
+    // Sidebar text
+    ctx.fillStyle = '#9aa3af';
+    ctx.font = '14px monospace';
+    ctx.fillText('NEXT', COLS*CELL + 16, 24);
+
+    // Draw next piece preview
+    drawNextPreview();
+
+    // Update HUD
+    updateHUD();
+  }
+
+  function drawBlock(gridX, gridY, color){
+    const x = gridX * CELL, y = gridY * CELL;
+    ctx.fillStyle = color;
+    ctx.fillRect(x+1, y+1, CELL-2, CELL-2);
+    ctx.fillStyle = 'rgba(255,255,255,0.08)'; // tiny shine
+    ctx.fillRect(x+2, y+2, CELL-4, 5);
+  }
+
+  function drawNextPreview(){
+    const px = COLS*CELL + 16, py = 40;
+    const box = 4*CELL;
+    // box background
+    ctx.fillStyle = '#0d1322';
+    ctx.fillRect(px-4, py-4, box+8, box+8);
+    // grid dots
+    ctx.fillStyle = '#1c2333';
+    for (let y=0;y<4;y++)
+      for (let x=0;x<4;x++)
+        ctx.fillRect(px + x*CELL, py + y*CELL, 1, 1);
+
+    // draw next piece
+    const shape = SHAPES[nextType][0];
+    forEachCell(shape, (cx,cy)=>{
+      ctx.fillStyle = COLORS[nextType];
+      ctx.fillRect(px + cx*CELL + 1, py + cy*CELL + 1, CELL-2, CELL-2);
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.fillRect(px + cx*CELL + 2, py + cy*CELL + 2, CELL-4, 5);
+    });
+
+    // controls legend
+    ctx.fillStyle = '#9aa3af';
+    ctx.fillText('Controls:', COLS*CELL + 16, py + box + 24);
+    ctx.fillText('←/→ move  ↓ soft drop', COLS*CELL + 16, py + box + 42);
+    ctx.fillText('↑/X rotate  Z ccw', COLS*CELL + 16, py + box + 58);
+    ctx.fillText('Space hard drop', COLS*CELL + 16, py + box + 74);
+    ctx.fillText('P pause  R reset', COLS*CELL + 16, py + box + 90);
+  }
+
+  function updateHUD(){
+    scoreEl.textContent = score;
+    linesEl.textContent = lines;
+    levelEl.textContent = level;
+  }
+
+  // =================== UI HELPERS ===================
+  function togglePause(){
+    if (gameOver) return;
+    running = !running;
+    running ? hideBanner() : showBanner('Paused\nPress P or Pause to resume');
+  }
+  function showBanner(msg){ banner.textContent = msg; banner.style.display = 'block'; }
+  function hideBanner(){ banner.style.display = 'none'; }
+  </script>
+</body>
+</html>

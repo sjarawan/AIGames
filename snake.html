@@ -5,24 +5,54 @@
   <title>Snake</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    html,body{height:100%;margin:0;background:#111;display:grid;place-items:center;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
-    canvas{background:#1d1d1d;image-rendering:pixelated;box-shadow:0 0 0 2px #000, 0 8px 30px rgba(0,0,0,.5)}
-    .hud{position:fixed;top:14px;left:14px;color:#eee;font:14px/1.2 monospace}
+    :root{--bg:#0f1115;--card:#151925;--text:#e6e6e6;--muted:#9aa3af}
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+    .wrap{min-height:100%;display:flex;flex-direction:column;align-items:center;gap:10px;padding:10px}
+    canvas{background:#1d1d1d;image-rendering:pixelated;border:1px solid rgba(255,255,255,.08);border-radius:12px;touch-action:none;box-shadow:0 8px 30px rgba(0,0,0,.4)}
+    .hud{font:14px/1.2 monospace;align-self:flex-start}
     .hud b{color:#00eaff}
-    .help{position:fixed;bottom:14px;left:14px;color:#aaa;font:12px/1.2 monospace;max-width:90vw}
-    .banner{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;color:#eee;font:16px/1.4 monospace;background:rgba(0,0,0,.6);padding:16px 18px;border-radius:8px;display:none}
-    .btn{color:#0ef}
+    .hint{color:var(--muted);font:12px/1.2 monospace;text-align:center}
+    .banner{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;color:#eee;font:16px/1.4 monospace;background:rgba(0,0,0,.6);padding:16px 18px;border-radius:10px;display:none;white-space:pre-line}
+    /* On-screen controls */
+    .controls{display:grid;grid-template-columns:repeat(3,minmax(54px,1fr));gap:8px;max-width:480px;width:100%}
+    .controls button{
+      -webkit-tap-highlight-color:transparent;touch-action:manipulation;
+      padding:12px 10px;border-radius:12px;border:1px solid rgba(255,255,255,.12);
+      background:#111726;color:#e6e6e6;font-size:16px;font-weight:600
+    }
+    .controls button:active{transform:translateY(1px)}
+    .controls .span2{grid-column:span 2}
+    .controls .ghost{background:#0d1322}
   </style>
 </head>
 <body>
-  <canvas id="game" width="480" height="360" aria-label="Snake game"></canvas>
+  <div class="wrap">
+    <div class="hud">
+      Score: <b id="score">0</b> &nbsp;|&nbsp; Best: <b id="best">0</b>
+    </div>
 
-  <div class="hud">
-    Score: <b id="score">0</b> &nbsp;|&nbsp; Best: <b id="best">0</b>
+    <canvas id="game" width="480" height="360" aria-label="Snake game"></canvas>
+
+    <div class="hint">
+      Desktop: Arrows/WASD • <b>P</b> pause • <b>R/Enter</b> restart • <b>Esc</b> back
+      <br/>Mobile: <b>Swipe</b> to turn (tap = pause), or use the buttons:
+    </div>
+
+    <!-- On-screen controls -->
+    <div class="controls" aria-label="On-screen controls">
+      <div></div>
+      <button id="btnUp"    aria-label="Up">⬆️</button>
+      <div></div>
+
+      <button id="btnLeft"  aria-label="Left">⬅️</button>
+      <button id="btnDown"  aria-label="Down">⬇️</button>
+      <button id="btnRight" aria-label="Right">➡️</button>
+
+      <button id="btnPause" class="span2 ghost" aria-label="Pause/Resume">⏸ Pause</button>
+      <button id="btnReset" class="ghost" aria-label="Reset Game">⟳ Reset</button>
+    </div>
   </div>
-  <div class="help">
-    Arrows/WASD to move · <span class="btn">P</span> pause · <span class="btn">R</span>/<span class="btn">Enter</span> restart
-  </div>
+
   <div class="banner" id="banner"></div>
 
   <script>
@@ -31,7 +61,7 @@
   const CELL   = 20;                   // pixels per cell
   const TICK_START = 8;                // frames per step (lower = faster)
   const SPEEDUP_EVERY = 5;             // speed up every N apples
-  const WRAP_WALLS = true;             // true = wrap around edges; false = die on wall
+  const WRAP_WALLS = true;             // true = wrap edges; false = die on wall
 
   // Canvas size from grid
   const canvas = document.getElementById('game');
@@ -45,18 +75,20 @@
   const banner  = document.getElementById('banner');
 
   // ----- STATE ---------------------------------------------------------------
-  const DIRS = { ArrowUp:[0,-1], ArrowDown:[0,1], ArrowLeft:[-1,0], ArrowRight:[1,0],
-                 w:[0,-1], s:[0,1], a:[-1,0], d:[1,0] };
+  const DIRS = { up:[0,-1], down:[0,1], left:[-1,0], right:[1,0] };
+  const KEYMAP = {
+    ArrowUp:'up', ArrowDown:'down', ArrowLeft:'left', ArrowRight:'right',
+    w:'up', s:'down', a:'left', d:'right'
+  };
 
   let snake, dir, dirQueue, apple, score, best, tick, frame, running, gameOver, ate;
   best = +localStorage.getItem('snake_best') || 0; bestEl.textContent = best;
   reset();
 
   function reset(){
-    // center snake with length 4
     const cx = (GRID_W/2|0), cy = (GRID_H/2|0);
     snake = [{x:cx, y:cy}, {x:cx-1, y:cy}, {x:cx-2, y:cy}, {x:cx-3, y:cy}];
-    dir = [1,0];                // moving right
+    dir = DIRS.right.slice();
     dirQueue = [];
     apple = spawnApple();
     score = 0; scoreEl.textContent = score;
@@ -65,30 +97,73 @@
     hideBanner();
   }
 
-  // ----- INPUT ---------------------------------------------------------------
-  const keys = new Set();
+  // ----- INPUT: Keyboard -----------------------------------------------------
   addEventListener('keydown', e=>{
     const k = e.key;
-    if(k==='p' || k==='P'){ togglePause(); return; }
-    if(k==='r' || k==='R' || k==='Enter'){ if(gameOver) reset(); return; }
-    if (DIRS[k]) {
-      e.preventDefault();
-      queueDirection(DIRS[k]);
-    }
+    if (k==='Escape'){ location.href='index.html'; return; }
+    if (k==='p'||k==='P'){ togglePause(); return; }
+    if (k==='r'||k==='R'||k==='Enter'){ if(gameOver) reset(); return; }
+
+    const key = k.length===1 ? k.toLowerCase() : k;
+    const dirName = KEYMAP[key];
+    if (dirName){ e.preventDefault(); queueDirection(DIRS[dirName]); }
   });
 
-  function queueDirection(next){
-    // prevent 180° turn
-    const [nx,ny] = next, [dx,dy] = dirQueue[0] || dir;
-    if (nx === -dx && ny === -dy) return;
-    // avoid flooding: only keep one queued change per tick
-    if (dirQueue.length < 2) dirQueue.unshift(next);
-  }
+  // ----- INPUT: Touch (Swipe + Tap) -----------------------------------------
+  let tStartX=0, tStartY=0, tTime=0;
+  canvas.addEventListener('touchstart', e=>{
+    const t = e.changedTouches[0];
+    tStartX = t.clientX; tStartY = t.clientY; tTime = performance.now();
+  }, {passive:true});
 
-  function togglePause(){
-    if(gameOver) return;
-    running = !running;
-    running ? hideBanner() : showBanner('Paused\nPress P to resume');
+  canvas.addEventListener('touchend', e=>{
+    if (gameOver) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - tStartX;
+    const dy = t.clientY - tStartY;
+    const dt = performance.now() - tTime;
+    const adx = Math.abs(dx), ady = Math.abs(dy);
+    const THRESH = 20; // min distance to count as swipe
+
+    if (adx < 8 && ady < 8 && dt < 250){
+      // quick tap -> pause toggle
+      togglePause();
+      return;
+    }
+
+    if (adx > ady){
+      if (dx > THRESH) queueDirection(DIRS.right);
+      else if (dx < -THRESH) queueDirection(DIRS.left);
+    } else {
+      if (dy > THRESH) queueDirection(DIRS.down);
+      else if (dy < -THRESH) queueDirection(DIRS.up);
+    }
+  }, {passive:true});
+
+  // ----- INPUT: On-screen Buttons -------------------------------------------
+  function bindTap(btn, fn){
+    btn.addEventListener('click', e=>{ e.preventDefault(); fn(); });
+    btn.addEventListener('pointerdown', e=>{ e.preventDefault(); fn(); });
+  }
+  const btnUp    = document.getElementById('btnUp');
+  const btnDown  = document.getElementById('btnDown');
+  const btnLeft  = document.getElementById('btnLeft');
+  const btnRight = document.getElementById('btnRight');
+  const btnPause = document.getElementById('btnPause');
+  const btnReset = document.getElementById('btnReset');
+
+  bindTap(btnUp,    ()=> queueDirection(DIRS.up));
+  bindTap(btnDown,  ()=> queueDirection(DIRS.down));
+  bindTap(btnLeft,  ()=> queueDirection(DIRS.left));
+  bindTap(btnRight, ()=> queueDirection(DIRS.right));
+  bindTap(btnPause, ()=> togglePause());
+  bindTap(btnReset, ()=> { if(gameOver) reset(); else { gameOver=true; reset(); } });
+
+  // ----- QUEUE DIRECTION CHANGE ---------------------------------------------
+  function queueDirection(next){
+    const [nx,ny] = next, [dx,dy] = dirQueue[0] || dir;
+    if (nx === -dx && ny === -dy) return;        // prevent 180° turn
+    if (dirQueue.length < 2) dirQueue.unshift(next); // keep at most 2 queued
   }
 
   // ----- GAME LOOP -----------------------------------------------------------
@@ -96,8 +171,7 @@
   requestAnimationFrame(loop);
 
   function loop(ts){
-    const dt = Math.min(33, ts - last); // cap frame gap
-    last = ts;
+    const dt = Math.min(33, ts - last); last = ts;
     if (running && !gameOver){
       frame += 1;
       if (frame % tick === 0) step();
@@ -122,7 +196,7 @@
       }
     }
 
-    // self-collision (check against body, excluding last tail if we grow after move)
+    // self-collision
     if (hitsSnake(head)) return doGameOver();
 
     // move
@@ -134,7 +208,6 @@
       score += 1;
       scoreEl.textContent = score;
       apple = spawnApple();
-      // speed up every few apples
       if (score % SPEEDUP_EVERY === 0 && tick > 3) tick -= 1;
     } else {
       ate = false;
@@ -143,7 +216,6 @@
   }
 
   function hitsSnake(pos){
-    // if we ate, we won't remove tail this step; else last cell is safe to overlap check
     const len = snake.length - (ate ? 0 : 1);
     for (let i=0;i<len;i++){
       if (snake[i].x === pos.x && snake[i].y === pos.y) return true;
@@ -152,14 +224,12 @@
   }
 
   function spawnApple(){
-    // pick a free cell not occupied by snake
     let x,y,ok=false, tries=0;
     do{
       x = (Math.random()*GRID_W)|0;
       y = (Math.random()*GRID_H)|0;
       ok = !snake.some(c=>c.x===x&&c.y===y);
-      tries++;
-      if (tries>500) break; // extremely unlikely safeguard
+      tries++; if (tries>500) break;
     }while(!ok);
     return {x,y};
   }
@@ -168,15 +238,14 @@
     gameOver = true; running = false;
     if (score > best){ best = score; localStorage.setItem('snake_best', String(best)); }
     bestEl.textContent = best;
-    showBanner(`Game Over\nScore ${score}  •  Best ${best}\nPress Enter or R to restart`);
+    showBanner(`Game Over\nScore ${score}  •  Best ${best}\nPress Enter/R or Reset to restart`);
   }
 
   // ----- RENDER --------------------------------------------------------------
   function draw(){
-    // clear
     ctx.clearRect(0,0,canvas.width,canvas.height);
 
-    // background grid
+    // background checker
     ctx.fillStyle = '#242424';
     for (let y=0;y<GRID_H;y++){
       for (let x=0;x<GRID_W;x++){
@@ -184,25 +253,23 @@
       }
     }
 
-    // apple (simple target)
+    // apple (bright red)
     drawCell(apple.x, apple.y, '#ff4757');
-    // snake
+
+    // snake with gradient body
     for (let i=snake.length-1;i>=0;i--){
       const c = snake[i];
-      // gradient-ish body
       const t = i / Math.max(1,snake.length-1);
       const col = lerpColor([0,234,255],[0,180,120], t);
       drawCell(c.x, c.y, col);
     }
 
-    // head accents (eyes)
-    const h = snake[0];
-    drawEye(h.x, h.y, dir);
-
-    // paused overlay is handled by banner
+    // head eye
+    drawEye(snake[0].x, snake[0].y, dir);
   }
 
   function drawCell(gx, gy, color){
+    // accept CSS color string or RGB array
     ctx.fillStyle = Array.isArray(color) ? colorString(color) : color;
     ctx.fillRect(gx*CELL+1, gy*CELL+1, CELL-2, CELL-2);
   }
@@ -225,14 +292,14 @@
   }
   function colorString([r,g,b]){ return `rgb(${r},${g},${b})`; }
 
-  // ----- BANNER --------------------------------------------------------------
-  function showBanner(msg){
-    banner.textContent = msg;
-    banner.style.display = 'block';
+  // ----- BANNER & UI ---------------------------------------------------------
+  function togglePause(){
+    if (gameOver) return;
+    running = !running;
+    running ? hideBanner() : showBanner('Paused\nTap or press P to resume');
   }
-  function hideBanner(){
-    banner.style.display = 'none';
-  }
+  function showBanner(msg){ banner.textContent = msg; banner.style.display = 'block'; }
+  function hideBanner(){ banner.style.display = 'none'; }
   </script>
 </body>
 </html>

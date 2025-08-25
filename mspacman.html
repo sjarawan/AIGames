@@ -1,0 +1,622 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Ms-Style Maze Chase</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <style>
+    :root{--bg:#0f1115;--card:#151925;--text:#e6e6e6;--muted:#9aa3af;--accent:#65d6ff}
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+    .wrap{min-height:100%;display:flex;flex-direction:column;align-items:center;gap:10px;padding:10px}
+    canvas{background:var(--card);border:1px solid rgba(255,255,255,.08);border-radius:12px;image-rendering:pixelated;touch-action:none}
+    .hud{font:14px/1.2 monospace;align-self:flex-start}
+    .hud b{color:var(--accent)}
+    .hint{color:var(--muted);font:12px/1.2 monospace;text-align:center}
+    .banner{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;color:#e6e6e6;font:16px/1.4 monospace;background:rgba(0,0,0,.55);padding:16px 18px;border-radius:10px;display:none;white-space:pre-line}
+    .controls{display:grid;grid-template-columns:repeat(3,minmax(54px,1fr));gap:8px;max-width:560px;width:100%}
+    .controls button{
+      -webkit-tap-highlight-color:transparent;touch-action:manipulation;
+      padding:12px 10px;border-radius:12px;border:1px solid rgba(255,255,255,.12);
+      background:#111726;color:#e6e6e6;font-size:16px;font-weight:600
+    }
+    .controls button:active{transform:translateY(1px)}
+    .controls .span2{grid-column:span 2}
+    .controls .ghost{background:#0d1322}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hud">
+      Score: <b id="score">0</b> |
+      Lives: <b id="lives">3</b> |
+      Level: <b id="level">1</b> |
+      Best: <b id="best">0</b>
+    </div>
+
+    <!-- Slightly larger than our earlier Pac game, but still phone-friendly -->
+    <canvas id="game" width="504" height="552" aria-label="Ms-style maze chase game" role="img"></canvas>
+
+    <div class="hint">
+      Desktop: Arrows/WASD steer • P pause • R/Enter reset • Esc back
+      <br/>Mobile: <b>Swipe</b> to steer (tap = pause) • Or use the buttons:
+    </div>
+
+    <div class="controls" aria-label="On-screen controls">
+      <div></div>
+      <button id="btnUp"    aria-label="Up">⬆️</button>
+      <div></div>
+
+      <button id="btnLeft"  aria-label="Left">⬅️</button>
+      <button id="btnDown"  aria-label="Down">⬇️</button>
+      <button id="btnRight" aria-label="Right">➡️</button>
+
+      <button id="btnPause" class="span2 ghost" aria-label="Pause/Resume">⏸ Pause</button>
+      <button id="btnReset" class="ghost" aria-label="Reset Game">⟳ Reset</button>
+    </div>
+  </div>
+
+  <div class="banner" id="banner"></div>
+
+  <script>
+  // ================== DIMENSIONS ==================
+  // We use a 21x23 grid like earlier for simplicity (fits phones well), but with 4 variants.
+  const COLS = 21, ROWS = 23, CELL = 24;   // canvas 504x552
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+
+  // ================== HUD ==================
+  const scoreEl = document.getElementById('score');
+  const livesEl = document.getElementById('lives');
+  const levelEl = document.getElementById('level');
+  const bestEl  = document.getElementById('best');
+  const banner  = document.getElementById('banner');
+  let best = +localStorage.getItem('msmaze_best') || 0; bestEl.textContent = best;
+
+  // ================== AUDIO ==================
+  let audio = null;
+  function ensureAudio(){ if(!audio) audio = new (window.AudioContext||window.webkitAudioContext)(); }
+  function tone(freq=440, dur=0.06, type='square', gain=0.03){
+    if(!audio) return;
+    const t=audio.currentTime, o=audio.createOscillator(), g=audio.createGain();
+    o.type=type; o.frequency.value=freq; g.gain.value=gain;
+    o.connect(g); g.connect(audio.destination); o.start(t); o.stop(t+dur);
+  }
+  function pelletFX(){ tone(1000,0.03,'square',0.02); }
+  function powerFX(){ tone(220,0.18,'sawtooth',0.04); }
+  function eatGhostFX(){ tone(700,0.08,'square',0.05); tone(500,0.08,'square',0.05); }
+  function deathFX(){ tone(120,0.32,'triangle',0.06); }
+  function fruitFX(){ tone(1500,0.08,'square',0.05); }
+
+  // ================== MAZE GENERATOR (4 variants) ==================
+  // symbols: '#': wall, '.': dot, 'o': power, ' ': path, 'D': ghost door (player blocked)
+  function baseGrid(){
+    const g = Array.from({length:ROWS}, ()=> Array.from({length:COLS}, ()=> ' '));
+    // border
+    for (let x=0;x<COLS;x++){ g[0][x]='#'; g[ROWS-1][x]='#'; }
+    for (let y=0;y<ROWS;y++){ g[y][0]='#'; g[y][COLS-1]='#'; }
+    const wall=(x,y,w,h)=>{ for(let j=0;j<h;j++) for(let i=0;i<w;i++) g[y+j][x+i]='#'; };
+
+    // A compact layout with lanes & alcoves
+    wall(2,2, 5,1); wall(2,3,1,3);
+    wall(8,2, 5,1); wall(13,3,1,3); wall(8,3,1,3);
+
+    wall(2,7, 5,1); wall(2,8,1,3);
+    wall(8,7, 5,1); wall(13,8,1,3); wall(8,8,1,3);
+
+    wall(2,12,5,1); wall(2,13,1,3);
+    wall(8,12,5,1); wall(13,13,1,3); wall(8,13,1,3);
+
+    wall(2,17,5,1); wall(2,18,1,3);
+    wall(8,17,5,1); wall(13,18,1,3); wall(8,18,1,3);
+
+    // bottom bar
+    wall(2,21,17,1);
+
+    // Ghost house
+    wall(8,10,5,1); wall(8,11,1,3); wall(12,11,1,3); wall(8,14,5,1);
+    g[10][10] = 'D'; // door
+    // tunnels
+    g[(ROWS/2|0)][0]=' '; g[(ROWS/2|0)][COLS-1]=' ';
+
+    // dots
+    for (let y=1;y<ROWS-1;y++)
+      for (let x=1;x<COLS-1;x++)
+        if (g[y][x]===' ') g[y][x]='.';
+
+    // clear house interior
+    for (let y=11;y<=13;y++) for (let x=9;x<=11;x++) g[y][x]=' ';
+
+    // power pellets
+    for (const [px,py] of [[1,1],[COLS-2,1],[1,ROWS-2],[COLS-2,ROWS-2]]) g[py][px]='o';
+    return g;
+  }
+
+  function mutateGrid(g, variant){
+    // Produce 4 distinct feels by adding/removing some walls
+    const w=(x,y,w,h)=>{ for(let j=0;j<h;j++) for(let i=0;i<w;i++) g[y+j][x+i]='#'; };
+    const clear=(x,y,w,h)=>{ for(let j=0;j<h;j++) for(let i=0;i<w;i++) if(g[y+j][x+i]==='#') g[y+j][x+i]='.'; };
+    if (variant===1){
+      // add extra cross bars mid-top and mid-bottom
+      w(5,5,11,1); w(5,16,11,1);
+    } else if (variant===2){
+      // open central lanes, more chases
+      clear(5,12,11,1); clear(5,7,11,1);
+      // add vertical pillars
+      w(5,4,1,4); w(15,4,1,4);
+      w(5,15,1,4); w(15,15,1,4);
+    } else if (variant===3){
+      // create side detours and dead-ends
+      w(2,5,3,1); w(16,5,3,1);
+      w(2,15,3,1); w(16,15,3,1);
+      clear(9,3,3,1); clear(9,18,3,1);
+    }
+    // keep tunnels & house door as is, and ensure dots populate cleared cells
+    for (let y=1;y<ROWS-1;y++)
+      for (let x=1;x<COLS-1;x++)
+        if (g[y][x]===' ') g[y][x]='.';
+    for (let y=11;y<=13;y++) for (let x=9;x<=11;x++) g[y][x]=' ';
+    g[10][10]='D';
+  }
+
+  // wall color per variant (nice retro vibe)
+  const WALL_COLORS = ['#1e3a8a', '#2563eb', '#7c3aed', '#0ea5e9'];
+
+  // ================== UTILS & PASSABILITY ==================
+  const DIRS = { up:[0,-1], down:[0,1], left:[-1,0], right:[1,0] };
+  function centerOf(x,y){ return { px:x*CELL + CELL/2, py:y*CELL + CELL/2 }; }
+  function atCenter(e){
+    const cx = Math.round(e.px/CELL)*CELL + CELL/2;
+    const cy = Math.round(e.py/CELL)*CELL + CELL/2;
+    return Math.abs(e.px - cx) < 0.5 && Math.abs(e.py - cy) < 0.5;
+  }
+  function tileAt(px,py){ return [Math.floor(px/CELL), Math.floor(py/CELL)]; }
+  function wrapX(x){ if (x<0) return COLS-1; if (x>=COLS) return 0; return x; }
+  function wrapY(y){ if (y<0) return 0; if (y>=ROWS) return ROWS-1; return y; }
+
+  // will be swapped per level
+  let grid = baseGrid();
+  let variant = 0, wallColor = WALL_COLORS[0];
+
+  function passableForPac(x,y){
+    const t = grid[wrapY(y)][wrapX(x)];
+    return t !== '#' && t !== 'D';
+  }
+  function passableForGhost(x,y){
+    const t = grid[wrapY(y)][wrapX(x)];
+    return t !== '#';
+  }
+
+  // ================== ENTITIES ==================
+  const pac = { x:10, y:16, px:0, py:0, dir:DIRS.left.slice(), next:DIRS.left.slice(), speed:7.4, mouth:0 };
+  Object.assign(pac, centerOf(pac.x,pac.y));
+
+  const ghosts = [
+    {name:'scarlet', color:'#ef4444', x:10, y:11, state:'normal', fright:0, released:false, relTime:0},
+    {name:'rose',    color:'#f472b6', x:9,  y:12, state:'normal', fright:0, released:false, relTime:2},
+    {name:'cyan',    color:'#22d3ee', x:11, y:12, state:'normal', fright:0, released:false, relTime:5},
+    {name:'amber',   color:'#f59e0b', x:10, y:12, state:'normal', fright:0, released:false, relTime:8},
+  ];
+  for (const g of ghosts){ Object.assign(g, centerOf(g.x,g.y)); g.dir = DIRS.left.slice(); g.speed = 6.6; }
+
+  // Fruit that moves through corridors
+  const FRUIT_VALUES = [100, 300, 500, 700, 1000, 1500];
+  let fruit = { active:false, x:1, y:1, px:0, py:0, dir:[1,0], timer:0, ttl:0, value:100 };
+
+  // Fright/Chase/Scatter timers
+  let frightTimer = 0, ghostChain = 0;
+  // Ms-style feel: scatter/chase phases (approximate). Start with scatter.
+  const PHASES = [ ['scatter',7], ['chase',20], ['scatter',7], ['chase',20], ['scatter',5], ['chase',20], ['scatter',5] ];
+  let phaseIdx = 0, phaseTime = PHASES[0][1];
+
+  // Game state
+  let score=0, lives=3, level=1, running=true, gameOver=false, dotsTotal=0, dotsLeft=0, timeSinceStart=0;
+
+  // ================== INPUT ==================
+  const KEYMAP = { ArrowUp:'up', ArrowDown:'down', ArrowLeft:'left', ArrowRight:'right', w:'up', s:'down', a:'left', d:'right' };
+  addEventListener('keydown', e=>{
+    const k = e.key;
+    if (k==='Escape'){ location.href='index.html'; return; }
+    if (k==='p'||k==='P'){ togglePause(); ensureAudio(); return; }
+    if (k==='r'||k==='R'||k==='Enter'){ reset(true); ensureAudio(); return; }
+    const key = k.length===1 ? k.toLowerCase() : k;
+    const name = KEYMAP[key]; if (!name) return;
+    ensureAudio(); pac.next = DIRS[name].slice();
+  });
+
+  // Swipe (tap -> pause)
+  let tStartX=0, tStartY=0, tStartT=0;
+  canvas.addEventListener('touchstart', e=>{
+    const t=e.changedTouches[0]; tStartX=t.clientX; tStartY=t.clientY; tStartT=performance.now();
+  }, {passive:true});
+  canvas.addEventListener('touchend', e=>{
+    const t=e.changedTouches[0]; const dx=t.clientX-tStartX, dy=t.clientY-tStartY, dt=performance.now()-tStartT;
+    const adx=Math.abs(dx), ady=Math.abs(dy), TH=20;
+    if (adx<8 && ady<8 && dt<250){ togglePause(); ensureAudio(); return; }
+    ensureAudio();
+    if (adx>ady){ pac.next = dx>TH ? DIRS.right.slice() : DIRS.left.slice(); }
+    else { pac.next = dy>TH ? DIRS.down.slice() : DIRS.up.slice(); }
+  }, {passive:true});
+
+  // Buttons
+  function bindTap(btn, fn){ btn.addEventListener('click', e=>{ e.preventDefault(); fn(); }); btn.addEventListener('pointerdown', e=>{ e.preventDefault(); fn(); }); }
+  const btnUp=document.getElementById('btnUp'), btnDown=document.getElementById('btnDown'), btnLeft=document.getElementById('btnLeft'), btnRight=document.getElementById('btnRight'), btnPause=document.getElementById('btnPause'), btnReset=document.getElementById('btnReset');
+  bindTap(btnUp,   ()=> pac.next = DIRS.up.slice());
+  bindTap(btnDown, ()=> pac.next = DIRS.down.slice());
+  bindTap(btnLeft, ()=> pac.next = DIRS.left.slice());
+  bindTap(btnRight,()=> pac.next = DIRS.right.slice());
+  bindTap(btnPause,()=> { ensureAudio(); togglePause(); });
+  bindTap(btnReset,()=> { ensureAudio(); reset(true); });
+
+  // ================== LOOP ==================
+  let last=0; requestAnimationFrame(loop);
+  function loop(ts){
+    const dt = Math.min(0.033, (ts-last)/1000); last=ts;
+    if (running && !gameOver) update(dt);
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  // ================== UPDATE ==================
+  function update(dt){
+    timeSinceStart += dt;
+
+    // Phase timing (scatter/chase)
+    phaseTime -= dt;
+    if (phaseTime <= 0){
+      phaseIdx = Math.min(phaseIdx+1, PHASES.length-1);
+      phaseTime = PHASES[phaseIdx][1];
+    }
+
+    // release ghosts over time
+    for (const g of ghosts){
+      if (!g.released && timeSinceStart >= g.relTime){ g.released = true; }
+    }
+
+    // move pac
+    moveEntity(pac, dt, pac.speed, passableForPac);
+
+    // pellets / power
+    const [tx,ty] = tileAt(pac.px,pac.py);
+    const t = grid[wrapY(ty)][wrapX(tx)];
+    if (t === '.'){
+      grid[ty][tx] = ' ';
+      score += 10; dotsLeft--;
+      if ((score/10)%2===0) pelletFX();
+      maybeSpawnFruit();
+    } else if (t === 'o'){
+      grid[ty][tx] = ' ';
+      score += 50; powerFX();
+      frightTimer = 6 + Math.max(0, level-1)*0.5;
+      ghostChain = 0;
+      for (const g of ghosts){ if (g.state==='normal') g.state='fright'; g.fright=frightTimer; }
+    }
+
+    // fruit movement / timeout
+    if (fruit.active){
+      fruit.timer += dt; fruit.ttl -= dt;
+      if (fruit.ttl <= 0){ fruit.active = false; }
+      else {
+        moveFruit(dt);
+        // eat fruit?
+        if (dist2(fruit.px,fruit.py,pac.px,pac.py) < (CELL*0.5)*(CELL*0.5)){
+          score += fruit.value; fruitFX(); fruit.active=false;
+        }
+      }
+    }
+
+    // ghosts
+    if (frightTimer>0){
+      frightTimer -= dt;
+      for (const g of ghosts) if (g.state==='fright') g.fright = frightTimer;
+      if (frightTimer <= 0){ for (const g of ghosts) if (g.state==='fright') g.state='normal'; }
+    }
+
+    for (const g of ghosts){
+      moveGhost(g, dt);
+      // collisions
+      if (dist2(g.px,g.py,pac.px,pac.py) < (CELL*0.6)*(CELL*0.6)){
+        if (g.state==='fright'){
+          g.state='eyes'; g.speed=10; eatGhostFX();
+          ghostChain = Math.min(ghostChain+1, 4);
+          score += 200 * (1<<(ghostChain-1));
+        } else if (g.state==='normal'){
+          return death();
+        }
+      }
+    }
+
+    // level complete?
+    if (dotsLeft <= 0){
+      level++;
+      // cycle maze variant
+      variant = (variant+1) % 4;
+      pac.speed += 0.4; for (const g of ghosts) g.speed += 0.35;
+      newLevel();
+      showBanner(`Level ${level}\nNew Maze!`); setTimeout(hideBanner, 1000);
+    }
+
+    updateHUD();
+  }
+
+  function maybeSpawnFruit(){
+    // Spawn fruit when certain fractions of dots are eaten
+    if (fruit.active) return;
+    const eaten = dotsTotal - dotsLeft;
+    if (eaten===Math.floor(dotsTotal*0.25) || eaten===Math.floor(dotsTotal*0.6)){
+      const val = FRUIT_VALUES[Math.min(level-1, FRUIT_VALUES.length-1)];
+      // start near center corridor
+      const spot = [{x:1,y:(ROWS/2|0)}, {x:COLS-2,y:(ROWS/2|0)}, {x:10,y:8}][(Math.random()*3)|0];
+      fruit = { active:true, x:spot.x, y:spot.y, px:0, py:0, dir:[1,0], timer:0, ttl:12, value:val };
+      Object.assign(fruit, centerOf(fruit.x, fruit.y));
+      // pick initial dir toward open corridor
+      const opts = neighbors(spot.x,spot.y, passableForPac);
+      if (opts.length) fruit.dir = opts[(Math.random()*opts.length)|0];
+    }
+  }
+
+  function moveFruit(dt){
+    // turn at intersections randomly; avoid backtracking if possible
+    if (atCenter(fruit)){
+      const [cx,cy] = tileAt(fruit.px,fruit.py);
+      let opts = neighbors(cx,cy, passableForPac);
+      // avoid door and house interior
+      opts = opts.filter(d=> passableForPac(cx+d[0], cy+d[1]));
+      // avoid immediate backtrack unless dead end
+      opts = opts.filter(d=> !(d[0]===-fruit.dir[0] && d[1]===-fruit.dir[1])) || neighbors(cx,cy, passableForPac);
+      fruit.dir = opts[(Math.random()*opts.length)|0] || fruit.dir;
+    }
+    const sp = 4.5 * CELL * dt;
+    fruit.px += fruit.dir[0]*sp; fruit.py += fruit.dir[1]*sp;
+    if (fruit.px < -CELL/2) fruit.px = (COLS-0.5)*CELL;
+    if (fruit.px > (COLS+0.5)*CELL) fruit.px = CELL/2;
+  }
+
+  function neighbors(x,y,pass){ 
+    const dirs=[DIRS.up,DIRS.down,DIRS.left,DIRS.right];
+    return dirs.filter(d=> pass(wrapX(x+d[0]), wrapY(y+d[1])));
+  }
+
+  // ================== MOVEMENT ==================
+  function moveEntity(e, dt, speed, passFn){
+    if (atCenter(e)){
+      const cx = Math.round(e.px/CELL), cy = Math.round(e.py/CELL);
+      const nx = wrapX(cx + e.next[0]), ny = wrapY(cy + e.next[1]);
+      if (passFn(nx,ny)) e.dir = e.next.slice();
+      const fx = wrapX(cx + e.dir[0]), fy = wrapY(cy + e.dir[1]);
+      if (!passFn(fx,fy)){ e.px = cx*CELL + CELL/2; e.py = cy*CELL + CELL/2; return; }
+    }
+    const sp = speed * CELL * dt;
+    e.px += e.dir[0] * sp; e.py += e.dir[1] * sp;
+    if (e.px < -CELL/2) e.px = (COLS-0.5)*CELL;
+    if (e.px > (COLS+0.5)*CELL) e.px = CELL/2;
+  }
+
+  function moveGhost(g, dt){
+    // Not released? Pace inside house until release
+    if (!g.released){
+      // gentle left/right inside the house
+      if (atCenter(g)){
+        g.dir = (g.dir[0]===1) ? DIRS.left.slice() : DIRS.right.slice();
+      }
+      step(g, dt, 3.2);
+      return;
+    }
+
+    // Eyes: head to house center, then normal
+    const house = centerOf(10,12);
+    if (g.state==='eyes'){
+      const dx = Math.sign(house.px - g.px), dy = Math.sign(house.py - g.py);
+      tryTurn(g, dx, dy, passableForGhost);
+      step(g, dt, 10);
+      if (Math.abs(g.px - house.px) < 2 && Math.abs(g.py - house.py) < 2){
+        g.state='normal'; g.speed = 6.6; g.dir = DIRS.left.slice();
+        g.released=false; // go back to house then re-release soon
+        g.relTime = timeSinceStart + 1.2;
+      }
+      return;
+    }
+
+    // tunnel slow for ghosts (Ms feel)
+    const tunnel = Math.abs(g.py/CELL - (ROWS/2)) < 0.6;
+    const baseSpeed = g.state==='fright' ? 4.8 : g.speed;
+    const sp = tunnel ? baseSpeed*0.7 : baseSpeed;
+
+    // At intersections: choose dir based on phase & target with randomness
+    if (atCenter(g)){
+      const [cx,cy] = tileAt(g.px,g.py);
+      let opts = neighbors(cx,cy, passableForGhost);
+      // don't reverse unless dead-end
+      opts = opts.filter(d=> !(d[0]===-g.dir[0] && d[1]===-g.dir[1])) || neighbors(cx,cy, passableForGhost);
+
+      let pick = g.dir;
+      if (g.state==='fright'){
+        pick = opts[(Math.random()*opts.length)|0];
+      } else {
+        const mode = PHASES[phaseIdx][0]; // 'scatter' or 'chase'
+        const tgt = (mode==='scatter') ? scatterCorner(g) : chaseTarget(g);
+        // Ms-style randomness: 20% pick random option
+        if (Math.random() < 0.2){
+          pick = opts[(Math.random()*opts.length)|0];
+        } else {
+          // pick option minimizing wrap manhattan distance
+          let best = Infinity;
+          for (const d of opts){
+            const nx=cx+d[0], ny=cy+d[1];
+            const dx = wrapDistX(nx, tgt.tx), dy = wrapDistY(ny, tgt.ty);
+            const dist = Math.abs(dx)+Math.abs(dy);
+            if (dist<best){ best=dist; pick=d; }
+          }
+        }
+      }
+      g.dir = pick.slice();
+    }
+    step(g, dt, sp);
+  }
+
+  function step(e, dt, spOverride){
+    const sp = (spOverride ?? e.speed) * CELL * dt;
+    e.px += e.dir[0]*sp; e.py += e.dir[1]*sp;
+    if (e.px < -CELL/2) e.px = (COLS-0.5)*CELL;
+    if (e.px > (COLS+0.5)*CELL) e.px = CELL/2;
+  }
+
+  function tryTurn(e, dx, dy, passFn){
+    const [cx,cy] = tileAt(e.px,e.py);
+    const options = [];
+    if (passFn(wrapX(cx+dx), cy)) options.push([dx,0]);
+    if (passFn(cx, wrapY(cy+dy))) options.push([0,dy]);
+    if (options.length) e.dir = options[(Math.random()*options.length)|0];
+  }
+
+  function chaseTarget(g){
+    const [ptx,pty] = tileAt(pac.px, pac.py);
+    // similar flavor to Ms-Pac AI (not arcade-accurate; with randomization elsewhere)
+    if (g.name==='scarlet') return {tx:ptx, ty:pty};                                   // red: direct
+    if (g.name==='rose')   return {tx:ptx + pac.dir[0]*4, ty:pty + pac.dir[1]*4};      // pink: ahead
+    if (g.name==='cyan')   return {tx:ptx - pac.dir[0]*2, ty:pty - pac.dir[1]*2};      // cyan: behind-ish
+    if (g.name==='amber'){ // orange: far chase, near scatter
+      const dx=wrapDistX(g.x, ptx), dy=wrapDistY(g.y, pty);
+      const far = Math.abs(dx)+Math.abs(dy) > 6;
+      return far ? {tx:ptx, ty:pty} : {tx:1, ty:ROWS-2};
+    }
+    return {tx:ptx, ty:pty};
+  }
+  function scatterCorner(g){
+    // four corners
+    const corners = [{tx:COLS-2,ty:1},{tx:1,ty:1},{tx:COLS-2,ty:ROWS-2},{tx:1,ty:ROWS-2}];
+    const map = {scarlet:0, rose:1, cyan:2, amber:3};
+    return corners[map[g.name] ?? 0];
+  }
+  function wrapDistX(a,b){ const raw=a-b, wrap=(raw+COLS)%COLS; return wrap>COLS/2 ? wrap-COLS : wrap; }
+  function wrapDistY(a,b){ const raw=a-b, wrap=(raw+ROWS)%ROWS; return wrap>ROWS/2 ? wrap-ROWS : wrap; }
+  function dist2(ax,ay,bx,by){ const dx=ax-bx, dy=ay-by; return dx*dx+dy*dy; }
+
+  // ================== GAME FLOW ==================
+  function countDots(){
+    let c=0; for (let y=0;y<ROWS;y++) for (let x=0;x<COLS;x++) if (grid[y][x]==='.'||grid[y][x]==='o') c++;
+    return c;
+  }
+
+  function newLevel(){
+    // rebuild maze
+    grid = baseGrid(); mutateGrid(grid, variant); wallColor = WALL_COLORS[variant];
+    dotsTotal = dotsLeft = countDots();
+    // reset positions
+    Object.assign(pac, {x:10,y:16, dir:DIRS.left.slice(), next:DIRS.left.slice()});
+    Object.assign(pac, centerOf(10,16));
+    const seed = [{x:10,y:11},{x:9,y:12},{x:11,y:12},{x:10,y:12}];
+    ghosts.forEach((g,i)=>{ Object.assign(g, centerOf(seed[i].x,seed[i].y)); g.dir=DIRS.left.slice(); g.state='normal'; g.fright=0; g.released=false; g.relTime= [0,2,5,8][i]; g.speed = 6.6; });
+    timeSinceStart = 0; fruit.active=false; phaseIdx=0; phaseTime=PHASES[0][1];
+  }
+
+  function death(){
+    lives--; deathFX();
+    if (lives<=0){
+      running=false; gameOver=true;
+      if (score>best){ best=score; localStorage.setItem('msmaze_best', String(best)); }
+      bestEl.textContent = best;
+      showBanner(`Game Over\nScore ${score} • Level ${level}\nPress R/Enter or Reset to play again`);
+      return;
+    }
+    // reset positions but keep dots/level
+    Object.assign(pac, {x:10,y:16, dir:DIRS.left.slice(), next:DIRS.left.slice()});
+    Object.assign(pac, centerOf(10,16));
+    const seed = [{x:10,y:11},{x:9,y:12},{x:11,y:12},{x:10,y:12}];
+    ghosts.forEach((g,i)=>{ Object.assign(g, centerOf(seed[i].x,seed[i].y)); g.dir=DIRS.left.slice(); g.state='normal'; g.speed=6.6; g.released=false; g.relTime = timeSinceStart + 1 + i; });
+    frightTimer=0; ghostChain=0; fruit.active=false; phaseIdx=0; phaseTime=PHASES[0][1];
+  }
+
+  function reset(full=false){
+    if (full){ score=0; lives=3; level=1; variant=0; }
+    running=true; gameOver=false; ghostChain=0; frightTimer=0; fruit.active=false;
+    newLevel(); hideBanner(); updateHUD();
+  }
+
+  function updateHUD(){
+    scoreEl.textContent = score;
+    livesEl.textContent = lives;
+    levelEl.textContent = level;
+  }
+  function togglePause(){ if(gameOver) return; running=!running; running?hideBanner():showBanner('Paused\nTap or press P to resume'); }
+  function showBanner(msg){ banner.textContent=msg; banner.style.display='block'; }
+  function hideBanner(){ banner.style.display='none'; }
+
+  // ================== RENDER ==================
+  function draw(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    // background
+    ctx.fillStyle = '#0d1018'; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    // walls & pellets
+    for (let y=0;y<ROWS;y++){
+      for (let x=0;x<COLS;x++){
+        const t = grid[y][x], px=x*CELL, py=y*CELL;
+        if (t==='#' || t==='D'){
+          ctx.fillStyle = (t==='D') ? '#334155' : wallColor;
+          ctx.fillRect(px+1, py+1, CELL-2, CELL-2);
+        } else if (t==='.' ){
+          ctx.fillStyle = '#e6e6e6';
+          ctx.beginPath(); ctx.arc(px+CELL/2, py+CELL/2, 3, 0, Math.PI*2); ctx.fill();
+        } else if (t==='o'){
+          ctx.fillStyle = '#fbbf24';
+          // blinking near fright end
+          const blink = frightTimer>0 && frightTimer<2 ? (Math.floor(performance.now()/120)%2===0) : true;
+          if (blink){ ctx.beginPath(); ctx.arc(px+CELL/2, py+CELL/2, 6, 0, Math.PI*2); ctx.fill(); }
+        }
+      }
+    }
+
+    // fruit
+    if (fruit.active){
+      ctx.fillStyle = '#ff3b7b';
+      ctx.beginPath(); ctx.arc(fruit.px, fruit.py, CELL*0.35, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#0f1115'; ctx.fillRect(fruit.px-2, fruit.py-4, 4, 6); // tiny stem/shine
+    }
+
+    // pac
+    drawPac();
+
+    // ghosts
+    for (const g of ghosts) drawGhost(g);
+  }
+
+  function drawPac(){
+    const angle = (Math.sin(performance.now()/80)+1)/4 + 0.12;
+    const dir = pac.dir, base = Math.atan2(dir[1], dir[0]);
+    ctx.fillStyle = '#facc15';
+    ctx.beginPath();
+    ctx.moveTo(pac.px, pac.py);
+    ctx.arc(pac.px, pac.py, CELL*0.45, base+angle, base-angle, false);
+    ctx.closePath(); ctx.fill();
+    // simple bow (Ms vibe)
+    ctx.fillStyle = '#ff5ca3';
+    const bx = pac.px - dir[1]*8 + (dir[0]===-1?2:dir[0]===1?-2:0);
+    const by = pac.px ? pac.py - 10 : pac.py - 10;
+    ctx.beginPath(); ctx.arc(bx-3, by, 3, 0, Math.PI*2); ctx.arc(bx+3, by, 3, 0, Math.PI*2); ctx.fill();
+  }
+
+  function drawGhost(g){
+    const x=g.px, y=g.py, r = CELL*0.45;
+    // flash when fright nearly over
+    const flashing = (g.state==='fright' && g.fright<2) ? (Math.floor(performance.now()/120)%2===0) : false;
+    const color = g.state==='fright' ? (flashing ? '#93c5fd' : '#60a5fa') : g.color;
+    ctx.fillStyle = color;
+    // body
+    ctx.beginPath();
+    ctx.arc(x, y, r, Math.PI, 0, false);
+    ctx.lineTo(x+r, y+r*0.9);
+    for(let i=2;i>=-2;i--){
+      const tx = x + (i/2)*r;
+      ctx.lineTo(tx + r/4, y + r*0.9);
+    }
+    ctx.closePath(); ctx.fill();
+    // eyes (not in "eyes" state since we swap color by state)
+    ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(x-6, y-2, 4, 0, Math.PI*2); ctx.arc(x+6, y-2, 4, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle='#0f1115'; ctx.beginPath(); ctx.arc(x-6+g.dir[0]*2, y-2+g.dir[1]*2, 2, 0, Math.PI*2); ctx.arc(x+6+g.dir[0]*2, y-2+g.dir[1]*2, 2, 0, Math.PI*2); ctx.fill();
+  }
+
+  // ================== START ==================
+  reset(true);
+  </script>
+</body>
+</html>
